@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
   };
 
   outputs = { self, nixpkgs }:
@@ -27,9 +27,7 @@
               zls
             ];
 
-            buildInputs = with pkgs; [
-              # openssl
-            ];
+            buildInputs = [ ];
 
             LD_LIBRARY_PATH = makeLibraryPath buildInputs;
           };
