@@ -29,17 +29,27 @@ pub fn main() !void {
             line = std.mem.trimRight(u8, line, "\r");
         }
 
-        const cmd = parse_input(line) catch |erro| {
-            std.debug.print("{}: could not parse input\n", .{erro});
+        const cmd = parseInput(line) catch {
+            std.debug.print("could not parse input\n", .{});
             continue;
         };
         try out.writer().print("{any} {any}\n", .{ cmd.action, cmd.pos });
-        const idx = try grid.pos_to_idx(&cmd.pos);
+        const idx = grid.posToIdx(&cmd.pos) catch {
+            std.debug.print("selected position out of bounds\n", .{});
+            continue;
+        };
 
-        const do_explode = grid.uncover(idx, true);
+        switch (cmd.action) {
+            .uncover => {
+                _ = grid.uncover_cell(idx, true);
+            },
+            .flag => {
+                grid.toggle_flag(idx);
+            },
+        }
 
-        if (do_explode) {
-            try grid.display_clear(out.writer());
+        if (grid.exploded) {
+            try grid.displayClear(out.writer());
             try out.writer().print("You lose!\n", .{});
             break;
         }
@@ -56,6 +66,8 @@ const Grid = struct {
     width: u32,
     height: u32,
     nb_of_bombs: u32,
+
+    exploded: bool = false,
 
     cells: std.ArrayList(Cell),
     prng: std.Random.DefaultPrng,
@@ -97,22 +109,22 @@ const Grid = struct {
 
         for (self.cells.items, 0..) |cell, idx| {
             if (cell.content == .bomb) {
-                const neighbors = self.neighbors_idx(idx);
+                const neighbors = self.neighborsIdx(idx);
                 for (neighbors) |neighbor| {
-                    self.cells.items[(neighbor orelse continue)].content.increment_count();
+                    self.cells.items[(neighbor orelse continue)].content.incrementCount();
                 }
             }
         }
     }
 
-    fn pos_to_idx(self: *const Grid, pos: *const Position) !Idx {
+    fn posToIdx(self: *const Grid, pos: *const Position) !Idx {
         std.debug.assert(pos.x <= self.width);
         std.debug.assert(pos.y <= self.height);
 
         return (pos.y - 1) * self.width + (pos.x - 1);
     }
 
-    fn neighbors_idx(self: *Grid, idx: Idx) [8]?Idx {
+    fn neighborsIdx(self: *Grid, idx: Idx) [8]?Idx {
         const first_col = idx % self.width == 0;
         const last_col = idx % self.width == (self.width - 1);
         const first_row = idx < self.width;
@@ -131,50 +143,69 @@ const Grid = struct {
     }
 
     fn display(self: *const Grid, writer: anytype) !void {
+        try writer.print("  ", .{});
+        for (1..self.width + 1) |i| try writer.print("{: >2}", .{i});
+        try writer.print(" x\n", .{});
+        for (self.cells.items, 0..) |cell, idx| {
+            if (idx % self.width == 0) try writer.print("{: >2} ", .{(idx / self.width) + 1});
+            try cell.display(writer);
+            try writer.print(" ", .{});
+            if (idx % self.width == self.width - 1) try writer.print("{: >2}\n", .{(idx / self.width) + 1});
+        }
+        try writer.print(" y", .{});
+        for (1..self.width + 1) |i| try writer.print("{: >2}", .{i});
+        try writer.print("\n", .{});
+    }
+
+    fn displayClear(self: *const Grid, writer: anytype) !void {
         for (self.cells.items, 0..) |cell, idx| {
             if (idx != 0 and idx % self.width == 0) {
                 try writer.print("\n", .{});
             }
-            try writer.print("{c} ", .{cell.display()});
+            try cell.displayContent(writer);
+            try writer.print(" ", .{});
         }
         try writer.print("\n", .{});
     }
 
-    fn display_clear(self: *const Grid, writer: anytype) !void {
-        for (self.cells.items, 0..) |cell, idx| {
-            if (idx != 0 and idx % self.width == 0) {
-                try writer.print("\n", .{});
-            }
-            try writer.print("{c} ", .{cell.display_content()});
-        }
-        try writer.print("\n", .{});
-    }
-
-    fn uncover(self: *Grid, idx: Idx, from_user: bool) bool {
+    fn uncover_cell(self: *Grid, idx: Idx, from_user: bool) void {
         var cell = &self.cells.items[idx];
 
-        if (cell.state == .flagged) return false;
+        if (cell.state == .flagged) return;
         const oldState = cell.state;
         cell.state = .revealed;
 
         switch (cell.content) {
-            .bomb => return true,
+            .bomb => {
+                self.exploded = true;
+                return;
+            },
             .count => |n| {
-                const next = self.neighbors_idx(idx);
+                const neighbors = self.neighborsIdx(idx);
                 if (oldState == .covered and n == 0) {
-                    var exploded = false;
-                    for (next) |ne| {
-                        exploded = exploded or self.uncover(ne orelse continue, false);
-                    }
-                    return exploded;
+                    for (neighbors) |neighbor| self.uncover_cell(neighbor orelse continue, false);
                 } else if (oldState == .revealed and n != 0 and from_user) {
-                    // uncover if n == neighbors.flags.len
-                    @panic("todo");
+                    var count_flags: u32 = 0;
+                    for (neighbors) |neighbor| if (self.cells.items[neighbor orelse continue].state == .flagged) {
+                        count_flags += 1;
+                    };
+                    if (count_flags != self.cells.items[idx].content.count) return;
+                    for (neighbors) |neighbor| if (self.cells.items[neighbor orelse continue].state == .covered) {
+                        self.uncover_cell(neighbor orelse continue, false);
+                    };
                 }
-
-                return false;
             },
         }
+    }
+
+    fn toggle_flag(self: *Grid, idx: Idx) void {
+        const cell = &self.cells.items[idx];
+
+        cell.state = switch (cell.state) {
+            .flagged => .covered,
+            .covered => .flagged,
+            .revealed => .revealed,
+        };
     }
 };
 
@@ -182,18 +213,22 @@ const Cell = struct {
     state: CellState = .covered,
     content: CellContent = .{ .count = 0 },
 
-    fn display(self: *const Cell) u8 {
+    fn display(self: *const Cell, writer: anytype) !void {
         return switch (self.state) {
-            .flagged => '~',
-            .covered => '_',
-            .revealed => self.display_content(),
+            .flagged => try writer.print("\x1b[35m~\x1b[0m", .{}),
+            .covered => try writer.print("-", .{}),
+            .revealed => self.displayContent(writer),
         };
     }
 
-    fn display_content(self: *const Cell) u8 {
+    fn displayContent(self: *const Cell, writer: anytype) !void {
         return switch (self.content) {
-            .count => |num| num + @as(u8, 48),
-            .bomb => @as(u8, '*'),
+            .count => |num| if (num == 0) {
+                try writer.print("0", .{});
+            } else {
+                try writer.print(codes.color.colorStr("{c}", codes.color.blue), .{num + @as(u8, 48)});
+            },
+            .bomb => try writer.print("\x1b[31m*\x1b[0m", .{}),
         };
     }
 };
@@ -208,7 +243,7 @@ const CellContent = union(enum) {
     count: u8,
     bomb,
 
-    fn increment_count(self: *CellContent) void {
+    fn incrementCount(self: *CellContent) void {
         switch (self.*) {
             .count => |n| {
                 self.* = .{ .count = n + 1 };
@@ -218,15 +253,38 @@ const CellContent = union(enum) {
     }
 };
 
-fn parse_input(line: []u8) !struct { action: enum { uncover, flag }, pos: Position } {
+const Action = enum { uncover, flag };
+
+fn parseInput(line: []u8) !struct { action: Action, pos: Position } {
     var parts = std.mem.splitScalar(u8, line, ' ');
+    const action_str = parts.next() orelse return error.ParseError;
     const x_str = parts.next() orelse return error.ParseError;
     const y_str = parts.next() orelse return error.ParseError;
     // unsure only two parts were present
     if (parts.next()) |_| return error.ParseError;
+
+    const action: Action = switch (std.meta.stringToEnum(enum { u, f }, action_str) orelse return error.ParseError) {
+        .u => .uncover,
+        .f => .flag,
+    };
     const x = try std.fmt.parseInt(u32, x_str, 10);
     const y = try std.fmt.parseInt(u32, y_str, 10);
-    return .{ .action = .uncover, .pos = .{ .x = x, .y = y } };
+    return .{ .action = action, .pos = .{ .x = x, .y = y } };
 }
 
-const err = error{ParseError};
+const MinesweeperError = error{ParseError};
+
+const codes = struct {
+    fn csi(comptime code: []const u8) []const u8 {
+        return "\x1b[" ++ code;
+    }
+
+    const color = struct {
+        fn colorStr(comptime str: []const u8, comptime clr: []const u8) []const u8 {
+            return clr ++ str ++ codes.color.reset;
+        }
+
+        const reset = csi("0m");
+        const blue = csi("34m");
+    };
+};
