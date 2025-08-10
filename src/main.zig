@@ -1,61 +1,97 @@
 const std = @import("std");
 
+const vaxis = @import("vaxis");
+
+pub const ctrlseq = @import("./ctrlseq.zig");
+pub const tty = @import("./tty.zig");
+pub const queue = @import("./queue.zig");
+pub const loop = @import("./loop.zig");
+
 pub fn main() !void {
     const alloc = std.heap.page_allocator;
 
     const out = std.io.getStdOut();
-    const in = std.io.getStdIn();
+    try out.writer().print(ctrlseq.color.colorStr("Welcome to Minesweeper!\n", ctrlseq.color.red), .{});
 
-    try out.writer().print("Welcome to Minesweeper\n", .{});
+    var term = try tty.Tty.init();
+    defer term.deinit();
+
+    var lp = try loop.Loop.init(&term);
+
+    try lp.start();
+    defer lp.stop();
 
     var grid = try Grid.init(alloc, 20, 10, 40);
     defer grid.deinit();
 
     grid.reset();
-    try out.writer().print("Grid initialized\n", .{});
 
-    try grid.display(out.writer());
-
-    var buffer: [100]u8 = undefined;
+    try term.anyWriter().print(ctrlseq.alt_screen_enter ++ ctrlseq.cursor_hide ++ ctrlseq.mouse_enable, .{});
+    defer term.anyWriter().print(ctrlseq.alt_screen_exit ++ ctrlseq.cursor_show ++ ctrlseq.mouse_disable, .{}) catch {};
 
     while (true) {
-        const line = try in.reader().readUntilDelimiterOrEof(
-            &buffer,
-            '\n',
-        ) orelse continue;
-
-        // trim annoying windows-only carriage return character
-        if (@import("builtin").os.tag == .windows) {
-            line = std.mem.trimRight(u8, line, "\r");
-        }
-
-        const cmd = parseInput(line) catch {
-            std.debug.print("could not parse input\n", .{});
-            continue;
-        };
-        try out.writer().print("{any} {any}\n", .{ cmd.action, cmd.pos });
-        const idx = grid.posToIdx(&cmd.pos) catch {
-            std.debug.print("selected position out of bounds\n", .{});
-            continue;
+        const event = lp.nextEvent() catch {
+            term.anyWriter().print("event error\r\n", .{});
         };
 
-        switch (cmd.action) {
-            .uncover => {
-                _ = grid.uncover_cell(idx, true);
+        switch (event) {
+            .key_press => |kp| {
+                if (kp.codepoint == 'q') break;
+                try term.anyWriter().print("{any}\r\n", .{kp});
             },
-            .flag => {
-                grid.toggle_flag(idx);
+            .win_size => |ws| {
+                if ((ws.col < grid.width) || (ws.row < grid.height)) {
+                    try term.anyWriter().print(ctrlseq.erase_display ++ "The terminal is not large enough", .{});
+                }
+            },
+            .mouse => |mouse| {
+                try term.anyWriter().print("{any}\r\n", .{mouse});
             },
         }
-
-        if (grid.exploded) {
-            try grid.displayClear(out.writer());
-            try out.writer().print("You lose!\n", .{});
-            break;
-        }
-
-        try grid.display(out.writer());
     }
+
+    // try grid.display(out.writer());
+
+    // var buffer: [100]u8 = undefined;
+
+    // while (true) {
+    //     const line = try in.reader().readUntilDelimiterOrEof(
+    //         &buffer,
+    //         '\n',
+    //     ) orelse continue;
+
+    //     // trim annoying windows-only carriage return character
+    //     if (@import("builtin").os.tag == .windows) {
+    //         line = std.mem.trimRight(u8, line, "\r");
+    //     }
+
+    //     const cmd = parseInput(line) catch {
+    //         std.debug.print("could not parse input\n", .{});
+    //         continue;
+    //     };
+    //     try out.writer().print("{any} {any}\n", .{ cmd.action, cmd.pos });
+    //     const idx = grid.posToIdx(&cmd.pos) catch {
+    //         std.debug.print("selected position out of bounds\n", .{});
+    //         continue;
+    //     };
+
+    //     switch (cmd.action) {
+    //         .uncover => {
+    //             _ = grid.uncover_cell(idx, true);
+    //         },
+    //         .flag => {
+    //             grid.toggle_flag(idx);
+    //         },
+    //     }
+
+    //     if (grid.exploded) {
+    //         try grid.displayClear(out.writer());
+    //         try out.writer().print("You lose!\n", .{});
+    //         break;
+    //     }
+
+    //     try grid.display(out.writer());
+    // }
 }
 
 const Position = struct { x: u32, y: u32 };
@@ -143,18 +179,10 @@ const Grid = struct {
     }
 
     fn display(self: *const Grid, writer: anytype) !void {
-        try writer.print("  ", .{});
-        for (1..self.width + 1) |i| try writer.print("{: >2}", .{i});
-        try writer.print(" x\n", .{});
         for (self.cells.items, 0..) |cell, idx| {
-            if (idx % self.width == 0) try writer.print("{: >2} ", .{(idx / self.width) + 1});
             try cell.display(writer);
-            try writer.print(" ", .{});
-            if (idx % self.width == self.width - 1) try writer.print("{: >2}\n", .{(idx / self.width) + 1});
+            if (idx % self.width == self.width - 1) try writer.print("\r\n", .{});
         }
-        try writer.print(" y", .{});
-        for (1..self.width + 1) |i| try writer.print("{: >2}", .{i});
-        try writer.print("\n", .{});
     }
 
     fn displayClear(self: *const Grid, writer: anytype) !void {
@@ -215,7 +243,7 @@ const Cell = struct {
 
     fn display(self: *const Cell, writer: anytype) !void {
         return switch (self.state) {
-            .flagged => try writer.print("\x1b[35m~\x1b[0m", .{}),
+            .flagged => try writer.print(ctrlseq.color.colorStr("{c}", ctrlseq.color.orange), .{}),
             .covered => try writer.print("-", .{}),
             .revealed => self.displayContent(writer),
         };
@@ -226,9 +254,9 @@ const Cell = struct {
             .count => |num| if (num == 0) {
                 try writer.print("0", .{});
             } else {
-                try writer.print(codes.color.colorStr("{c}", codes.color.blue), .{num + @as(u8, 48)});
+                try writer.print(ctrlseq.color.colorStr("{c}", ctrlseq.color.blue), .{num + @as(u8, 48)});
             },
-            .bomb => try writer.print("\x1b[31m*\x1b[0m", .{}),
+            .bomb => try writer.print(ctrlseq.color.colorStr("*", ctrlseq.color.red), .{}),
         };
     }
 };
@@ -255,36 +283,4 @@ const CellContent = union(enum) {
 
 const Action = enum { uncover, flag };
 
-fn parseInput(line: []u8) !struct { action: Action, pos: Position } {
-    var parts = std.mem.splitScalar(u8, line, ' ');
-    const action_str = parts.next() orelse return error.ParseError;
-    const x_str = parts.next() orelse return error.ParseError;
-    const y_str = parts.next() orelse return error.ParseError;
-    // unsure only two parts were present
-    if (parts.next()) |_| return error.ParseError;
-
-    const action: Action = switch (std.meta.stringToEnum(enum { u, f }, action_str) orelse return error.ParseError) {
-        .u => .uncover,
-        .f => .flag,
-    };
-    const x = try std.fmt.parseInt(u32, x_str, 10);
-    const y = try std.fmt.parseInt(u32, y_str, 10);
-    return .{ .action = action, .pos = .{ .x = x, .y = y } };
-}
-
 const MinesweeperError = error{ParseError};
-
-const codes = struct {
-    fn csi(comptime code: []const u8) []const u8 {
-        return "\x1b[" ++ code;
-    }
-
-    const color = struct {
-        fn colorStr(comptime str: []const u8, comptime clr: []const u8) []const u8 {
-            return clr ++ str ++ codes.color.reset;
-        }
-
-        const reset = csi("0m");
-        const blue = csi("34m");
-    };
-};
