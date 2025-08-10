@@ -1,8 +1,17 @@
+// <https://www.xfree86.org/current/ctlseqs.html>
+
 const csi = "\x1b[";
 
 pub const erase_display_cursor_to_end = csi ++ "0J";
 pub const erase_display_start_to_cursor = csi ++ "1J";
 pub const erase_display = csi ++ "2J";
+
+pub const cursor_up = csi ++ "A";
+pub const cursor_down = csi ++ "B";
+pub const cursor_right = csi ++ "C";
+pub const cursor_left = csi ++ "D";
+
+pub const cursor_home = csi ++ "H";
 
 pub const cursor_show = csi ++ "?25h";
 pub const cursor_hide = csi ++ "?25l";

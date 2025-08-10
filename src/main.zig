@@ -1,7 +1,5 @@
 const std = @import("std");
 
-const vaxis = @import("vaxis");
-
 pub const ctrlseq = @import("./ctrlseq.zig");
 pub const tty = @import("./tty.zig");
 pub const queue = @import("./queue.zig");
@@ -21,114 +19,104 @@ pub fn main() !void {
     try lp.start();
     defer lp.stop();
 
-    var grid = try Grid.init(alloc, 20, 10, 40);
+    var grid = try Grid.init(alloc, .{ .height = 10, .width = 20, .nb_of_bombs = 30 });
     defer grid.deinit();
 
     grid.reset();
 
-    try term.anyWriter().print(ctrlseq.alt_screen_enter ++ ctrlseq.cursor_hide ++ ctrlseq.mouse_enable, .{});
-    defer term.anyWriter().print(ctrlseq.alt_screen_exit ++ ctrlseq.cursor_show ++ ctrlseq.mouse_disable, .{}) catch {};
+    try term.enterGameScreen();
+
+    var lock_game = false;
 
     while (true) {
-        const event = lp.nextEvent() catch {
-            term.anyWriter().print("event error\r\n", .{});
-        };
+        // draw
+        var writer = term.anyWriter();
+        try writer.print(ctrlseq.erase_display ++ ctrlseq.cursor_home, .{});
+        try grid.display(&writer);
 
+        // event
+        const event = try lp.nextEvent();
         switch (event) {
             .key_press => |kp| {
                 if (kp.codepoint == 'q') break;
-                try term.anyWriter().print("{any}\r\n", .{kp});
             },
             .win_size => |ws| {
-                if ((ws.col < grid.width) || (ws.row < grid.height)) {
-                    try term.anyWriter().print(ctrlseq.erase_display ++ "The terminal is not large enough", .{});
+                if ((ws.col < grid.options.width) or (ws.row < grid.options.height)) {
+                    try term.anyWriter().print(ctrlseq.erase_display ++ ctrlseq.cursor_home ++ "The terminal is not large enough", .{});
+                    lock_game = true;
+                } else {
+                    lock_game = false;
                 }
             },
             .mouse => |mouse| {
-                try term.anyWriter().print("{any}\r\n", .{mouse});
+                if (lock_game) continue;
+                // skip out of bounds
+                const idx = grid.posToIdx(&.{ .x = (mouse.x / 2) + 1, .y = mouse.y }) orelse continue;
+
+                switch (mouse.button) {
+                    .left => {
+                        _ = grid.uncoverCell(idx, true);
+                    },
+                    .right => {
+                        grid.toggleFlag(idx);
+                    },
+                    else => continue,
+                }
+
+                if (grid.isGameOver()) break;
             },
         }
     }
 
-    // try grid.display(out.writer());
+    try term.exitGameScreen();
 
-    // var buffer: [100]u8 = undefined;
+    var writer = out.writer().any();
+    try grid.displayClear(&writer);
 
-    // while (true) {
-    //     const line = try in.reader().readUntilDelimiterOrEof(
-    //         &buffer,
-    //         '\n',
-    //     ) orelse continue;
-
-    //     // trim annoying windows-only carriage return character
-    //     if (@import("builtin").os.tag == .windows) {
-    //         line = std.mem.trimRight(u8, line, "\r");
-    //     }
-
-    //     const cmd = parseInput(line) catch {
-    //         std.debug.print("could not parse input\n", .{});
-    //         continue;
-    //     };
-    //     try out.writer().print("{any} {any}\n", .{ cmd.action, cmd.pos });
-    //     const idx = grid.posToIdx(&cmd.pos) catch {
-    //         std.debug.print("selected position out of bounds\n", .{});
-    //         continue;
-    //     };
-
-    //     switch (cmd.action) {
-    //         .uncover => {
-    //             _ = grid.uncover_cell(idx, true);
-    //         },
-    //         .flag => {
-    //             grid.toggle_flag(idx);
-    //         },
-    //     }
-
-    //     if (grid.exploded) {
-    //         try grid.displayClear(out.writer());
-    //         try out.writer().print("You lose!\n", .{});
-    //         break;
-    //     }
-
-    //     try grid.display(out.writer());
-    // }
+    if (grid.exploded) {
+        try out.writer().print("You lose!\r\n", .{});
+    } else {
+        try out.writer().print("You win!\r\n", .{});
+    }
 }
 
 const Position = struct { x: u32, y: u32 };
 
 const Grid = struct {
-    const Idx = usize;
-
-    width: u32,
-    height: u32,
-    nb_of_bombs: u32,
-
-    exploded: bool = false,
-
     cells: std.ArrayList(Cell),
+    options: Self.Options,
     prng: std.Random.DefaultPrng,
 
-    fn init(alloc: std.mem.Allocator, width: u32, height: u32, nb_of_bombs: u32) !Grid {
+    nb_of_cells_uncovered: u32 = 0,
+    exploded: bool = false,
+
+    const Self = @This();
+
+    const Idx = usize;
+    const Options = struct { width: u32, height: u32, nb_of_bombs: u32 };
+
+    fn init(alloc: std.mem.Allocator, options: Self.Options) !Self {
         var cells = std.ArrayList(Cell).init(alloc);
 
-        const prng = std.Random.DefaultPrng.init(0);
+        const seed = std.time.microTimestamp();
+        const prng = std.Random.DefaultPrng.init(@bitCast(seed));
 
         // make all cells default
-        const grid_len = width * height;
+        const grid_len = options.width * options.height;
         try cells.ensureTotalCapacity(grid_len);
         for (0..grid_len) |_| {
             try cells.append(.{});
         }
 
-        return .{ .cells = cells, .width = width, .height = height, .nb_of_bombs = nb_of_bombs, .prng = prng };
+        return .{ .cells = cells, .options = options, .prng = prng };
     }
 
-    fn deinit(self: *Grid) void {
+    fn deinit(self: *Self) void {
         self.cells.deinit();
     }
 
-    fn reset(self: *Grid) void {
-        var nb_of_bombs = self.nb_of_bombs;
+    fn reset(self: *Self) void {
+        var nb_of_bombs = self.options.nb_of_bombs;
 
         while (nb_of_bombs != 0) {
             const rpos = self.prng.random().intRangeAtMost(usize, 0, self.cells.items.len - 1);
@@ -153,55 +141,56 @@ const Grid = struct {
         }
     }
 
-    fn posToIdx(self: *const Grid, pos: *const Position) !Idx {
-        std.debug.assert(pos.x <= self.width);
-        std.debug.assert(pos.y <= self.height);
-
-        return (pos.y - 1) * self.width + (pos.x - 1);
+    fn posToIdx(self: *const Self, pos: *const Position) ?Idx {
+        if (pos.x > self.options.width or pos.y > self.options.height) return null;
+        return (pos.y - 1) * self.options.width + (pos.x - 1);
     }
 
-    fn neighborsIdx(self: *Grid, idx: Idx) [8]?Idx {
-        const first_col = idx % self.width == 0;
-        const last_col = idx % self.width == (self.width - 1);
-        const first_row = idx < self.width;
-        const last_row = idx >= self.width * (self.height - 1);
+    fn neighborsIdx(self: *Self, idx: Idx) [8]?Idx {
+        const width = self.options.width;
+        const height = self.options.height;
+
+        const first_col = idx % width == 0;
+        const last_col = idx % width == (width - 1);
+        const first_row = idx < width;
+        const last_row = idx >= width * (height - 1);
 
         return .{
             if (!first_col) idx - 1 else null,
             if (!last_col) idx + 1 else null,
-            if (!first_row) idx - self.width else null,
-            if (!last_row) idx + self.width else null,
-            if (!first_col and !first_row) idx - 1 - self.width else null,
-            if (!first_col and !last_row) idx - 1 + self.width else null,
-            if (!last_col and !first_row) idx + 1 - self.width else null,
-            if (!last_col and !last_row) idx + 1 + self.width else null,
+            if (!first_row) idx - width else null,
+            if (!last_row) idx + width else null,
+            if (!first_col and !first_row) idx - 1 - width else null,
+            if (!first_col and !last_row) idx - 1 + width else null,
+            if (!last_col and !first_row) idx + 1 - width else null,
+            if (!last_col and !last_row) idx + 1 + width else null,
         };
     }
 
-    fn display(self: *const Grid, writer: anytype) !void {
+    fn display(self: *const Self, writer: *std.io.AnyWriter) !void {
         for (self.cells.items, 0..) |cell, idx| {
             try cell.display(writer);
-            if (idx % self.width == self.width - 1) try writer.print("\r\n", .{});
+            try writer.print(" ", .{});
+            if (idx % self.options.width == self.options.width - 1) try writer.print("\r\n", .{});
         }
     }
 
-    fn displayClear(self: *const Grid, writer: anytype) !void {
+    fn displayClear(self: *const Self, writer: anytype) !void {
         for (self.cells.items, 0..) |cell, idx| {
-            if (idx != 0 and idx % self.width == 0) {
-                try writer.print("\n", .{});
-            }
             try cell.displayContent(writer);
             try writer.print(" ", .{});
+            if (idx % self.options.width == self.options.width - 1) try writer.print("\r\n", .{});
         }
-        try writer.print("\n", .{});
     }
 
-    fn uncover_cell(self: *Grid, idx: Idx, from_user: bool) void {
+    fn uncoverCell(self: *Self, idx: Idx, from_user: bool) void {
         var cell = &self.cells.items[idx];
 
         if (cell.state == .flagged) return;
         const oldState = cell.state;
         cell.state = .revealed;
+
+        self.nb_of_cells_uncovered += 1;
 
         switch (cell.content) {
             .bomb => {
@@ -211,7 +200,7 @@ const Grid = struct {
             .count => |n| {
                 const neighbors = self.neighborsIdx(idx);
                 if (oldState == .covered and n == 0) {
-                    for (neighbors) |neighbor| self.uncover_cell(neighbor orelse continue, false);
+                    for (neighbors) |neighbor| self.uncoverCell(neighbor orelse continue, false);
                 } else if (oldState == .revealed and n != 0 and from_user) {
                     var count_flags: u32 = 0;
                     for (neighbors) |neighbor| if (self.cells.items[neighbor orelse continue].state == .flagged) {
@@ -219,14 +208,14 @@ const Grid = struct {
                     };
                     if (count_flags != self.cells.items[idx].content.count) return;
                     for (neighbors) |neighbor| if (self.cells.items[neighbor orelse continue].state == .covered) {
-                        self.uncover_cell(neighbor orelse continue, false);
+                        self.uncoverCell(neighbor orelse continue, false);
                     };
                 }
             },
         }
     }
 
-    fn toggle_flag(self: *Grid, idx: Idx) void {
+    fn toggleFlag(self: *Self, idx: Idx) void {
         const cell = &self.cells.items[idx];
 
         cell.state = switch (cell.state) {
@@ -235,21 +224,25 @@ const Grid = struct {
             .revealed => .revealed,
         };
     }
+
+    fn isGameOver(self: *const Self) bool {
+        return self.exploded or self.nb_of_cells_uncovered + self.options.nb_of_bombs == self.cells.items.len;
+    }
 };
 
 const Cell = struct {
     state: CellState = .covered,
     content: CellContent = .{ .count = 0 },
 
-    fn display(self: *const Cell, writer: anytype) !void {
+    fn display(self: *const Cell, writer: *std.io.AnyWriter) !void {
         return switch (self.state) {
-            .flagged => try writer.print(ctrlseq.color.colorStr("{c}", ctrlseq.color.orange), .{}),
+            .flagged => try writer.print(ctrlseq.color.colorStr("~", ctrlseq.color.orange), .{}),
             .covered => try writer.print("-", .{}),
             .revealed => self.displayContent(writer),
         };
     }
 
-    fn displayContent(self: *const Cell, writer: anytype) !void {
+    fn displayContent(self: *const Cell, writer: *std.io.AnyWriter) !void {
         return switch (self.content) {
             .count => |num| if (num == 0) {
                 try writer.print("0", .{});

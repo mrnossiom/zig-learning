@@ -5,6 +5,7 @@ const posix = std.posix;
 const root = @import("root");
 const loop = root.loop;
 const queue = root.queue;
+const ctrlseq = root.ctrlseq;
 
 pub const Tty = if (@import("builtin").os.tag == .linux) PosixTty else @compileError("os not supported");
 
@@ -86,5 +87,12 @@ pub const PosixTty = struct {
 
     pub fn anyWriter(self: *const PosixTty) std.io.AnyWriter {
         return std.io.AnyWriter{ .context = self, .writeFn = PosixTty.writeOpaque };
+    }
+
+    pub fn enterGameScreen(self: *PosixTty) !void {
+        try self.anyWriter().print(ctrlseq.alt_screen_enter ++ ctrlseq.cursor_hide ++ ctrlseq.mouse_enable, .{});
+    }
+    pub fn exitGameScreen(self: *PosixTty) !void {
+        try self.anyWriter().print(ctrlseq.alt_screen_exit ++ ctrlseq.cursor_show ++ ctrlseq.mouse_disable, .{});
     }
 };
