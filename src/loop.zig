@@ -54,7 +54,7 @@ pub const Loop = struct {
     fn handleWinSizeChange(ctx: *anyopaque) void {
         const self: *Self = @ptrCast(@alignCast(ctx));
         const win_size = self.tty.getWinsize() catch unreachable;
-        self.queue.push_front(.{ .win_size = win_size });
+        self.queue.pushFront(.{ .win_size = win_size });
     }
 
     fn parseEvent(buf: []const u8) !?Event {
@@ -70,12 +70,12 @@ pub const Loop = struct {
                     return .{ .mouse = .{ .button = @enumFromInt(buf[3] & 0b11), .x = buf[4] - 32, .y = buf[5] - 32 } };
                 } else {
                     // not handled, discard
-                    std.debug.print("{any}\r\n", .{buf});
+                    // std.debug.print("{any}\r\n", .{buf});
                     return null;
                 }
             },
             else => {
-                std.debug.print("{any}\r\n", .{buf});
+                // std.debug.print("{any}\r\n", .{buf});
                 return null;
             },
         }
@@ -88,12 +88,12 @@ pub const Loop = struct {
             const len = try self.tty.anyReader().read(&buf);
 
             const ev = try Self.parseEvent(buf[0..len]) orelse continue;
-            self.queue.push_front(ev);
+            self.queue.pushFront(ev);
         }
     }
 
     pub fn nextEvent(self: *Self) !Event {
-        return self.queue.pop_back();
+        return self.queue.popBack();
     }
 };
 

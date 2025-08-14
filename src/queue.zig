@@ -20,7 +20,7 @@ pub fn Queue(
             return .{};
         }
 
-        pub fn push_front(self: *Self, el: T) void {
+        pub fn pushFront(self: *Self, el: T) void {
             self.mutex.lock();
             defer self.mutex.unlock();
 
@@ -36,7 +36,7 @@ pub fn Queue(
             self.len += 1;
         }
 
-        pub fn pop_back(self: *Self) T {
+        pub fn popBack(self: *Self) T {
             self.mutex.lock();
             defer self.mutex.unlock();
 
@@ -60,9 +60,9 @@ pub fn Queue(
 test "queue" {
     var queue = Queue(u8, 2).init();
 
-    queue.push_front(1);
-    queue.push_front(2);
-    const el1 = queue.pop_back();
+    queue.pushFront(1);
+    queue.pushFront(2);
+    const el1 = queue.popBack();
     std.debug.assert(el1 == 1);
-    queue.push_front(3);
+    queue.pushFront(3);
 }

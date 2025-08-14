@@ -73,10 +73,12 @@ pub fn main() !void {
     var writer = out.writer().any();
     try grid.displayClear(&writer);
 
-    if (grid.exploded) {
-        try out.writer().print("You lose!\r\n", .{});
-    } else {
+    if (grid.allBombsUncovered()) {
         try out.writer().print("You win!\r\n", .{});
+    } else if (grid.exploded) {
+        try out.writer().print("You exploded!\r\n", .{});
+    } else {
+        try out.writer().print("You abandoned!\r\n", .{});
     }
 }
 
@@ -187,10 +189,10 @@ const Grid = struct {
         var cell = &self.cells.items[idx];
 
         if (cell.state == .flagged) return;
-        const oldState = cell.state;
+        const old_state = cell.state;
         cell.state = .revealed;
 
-        self.nb_of_cells_uncovered += 1;
+        if (old_state == .covered) self.nb_of_cells_uncovered += 1;
 
         switch (cell.content) {
             .bomb => {
@@ -199,9 +201,9 @@ const Grid = struct {
             },
             .count => |n| {
                 const neighbors = self.neighborsIdx(idx);
-                if (oldState == .covered and n == 0) {
+                if (old_state == .covered and n == 0) {
                     for (neighbors) |neighbor| self.uncoverCell(neighbor orelse continue, false);
-                } else if (oldState == .revealed and n != 0 and from_user) {
+                } else if (old_state == .revealed and n != 0 and from_user) {
                     var count_flags: u32 = 0;
                     for (neighbors) |neighbor| if (self.cells.items[neighbor orelse continue].state == .flagged) {
                         count_flags += 1;
@@ -225,8 +227,12 @@ const Grid = struct {
         };
     }
 
+    fn allBombsUncovered(self: *const Self) bool {
+        return self.nb_of_cells_uncovered + self.options.nb_of_bombs == self.cells.items.len;
+    }
+
     fn isGameOver(self: *const Self) bool {
-        return self.exploded or self.nb_of_cells_uncovered + self.options.nb_of_bombs == self.cells.items.len;
+        return self.exploded or self.allBombsUncovered();
     }
 };
 
